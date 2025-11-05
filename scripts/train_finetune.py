@@ -8,8 +8,8 @@ import torch.nn as nn
 import segmentation_models_pytorch as smp
 
 # --- 1️⃣ Paths ---
-TRAIN_IMAGES_DIR = "data/data/images/train" #IMPUT YOUR PATH TO FOLDERS [JUST FOR REFERENCE] 
-TRAIN_MASKS_DIR  = "data/data/masks/train_bin"
+TRAIN_IMAGES_DIR = "data/images/train" #IMPUT YOUR PATH TO FOLDERS [JUST FOR REFERENCE] 
+TRAIN_MASKS_DIR  = "data/masks/train_bin"
 PRETRAINED_MODEL_PATH = "unet_epoch50.pth"  # will not work in Mac. have to paste absolute path
 FINE_TUNE_SAVE_PATH = "unet_finetuned.pth"
 
