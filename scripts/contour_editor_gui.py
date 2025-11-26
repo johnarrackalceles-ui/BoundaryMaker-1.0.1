@@ -27,8 +27,9 @@ class ContourEditorGUI:
     - Draw new independent contours (New Boundary)
     - Edit vertices (Edit mode)
     - Delete vertex (Right-click)
+    - Box-delete vertices (Right-click + drag)
     - Join two contours (J: select A then B)
-    - Zoom (+/-), Pan (hold SPACE and drag)
+    - Zoom (+/-), Pan (hold SPACE and drag or middle mouse)
     - Save / Cancel / Reset
     """
 
@@ -52,6 +53,12 @@ class ContourEditorGUI:
         # edit state
         self.selected = None     # (contour_idx, vertex_idx)
         self.hover = None
+
+        # box selection (right-drag)
+        self.box_selecting = False
+        self.box_start_img = None      # (x, y) in image coords
+        self.box_current_img = None    # (x, y) in image coords
+        self.box_start_screen = None   # (x, y) in screen coords
 
         # tk setup
         self.root = tk.Tk()
@@ -85,7 +92,10 @@ class ContourEditorGUI:
         self.canvas.bind("<B1-Motion>", self.on_left_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_left_up)
 
-        self.canvas.bind("<Button-3>", self.on_right_click)
+        # right button: click = delete single; drag = box-select delete
+        self.canvas.bind("<Button-3>", self.on_right_down)
+        self.canvas.bind("<B3-Motion>", self.on_right_drag)
+        self.canvas.bind("<ButtonRelease-3>", self.on_right_up)
 
         self.root.bind("<Key-j>", lambda e: self.toggle_join())
         self.root.bind("<Key-Escape>", lambda e: self.cancel_current())
@@ -174,7 +184,7 @@ class ContourEditorGUI:
         self.panning = False
         self.last_mouse = None
 
-    # ---------- drawing & editing ----------
+    # ---------- left-button drawing & editing ----------
     def on_left_down(self, e):
         ix, iy = self.screen_to_image(e.x, e.y)
         if self.panning:
@@ -227,24 +237,86 @@ class ContourEditorGUI:
     def on_left_up(self, _):
         self.selected = None
 
-    def on_right_click(self, e):
-        ix, iy = self.screen_to_image(e.x, e.y)
-        # delete nearest vertex
-        hit = self.find_nearest_vertex((ix, iy), thresh=10)
+    # ---------- right-button delete / box-select delete ----------
+    def delete_single_vertex_at(self, ix, iy, thresh=10):
+        """Delete the nearest vertex around (ix, iy) in image coords."""
+        hit = self.find_nearest_vertex((ix, iy), thresh=thresh)
         if hit:
             ci, vi = hit
             if len(self.contours[ci]) > 3:
                 del self.contours[ci][vi]
             else:
-                # too small -> remove contour
+                # too small -> remove contour entirely
                 del self.contours[ci]
             self.render()
 
+    def delete_points_in_box(self, x_min, y_min, x_max, y_max):
+        """Delete all vertices inside the axis-aligned box in image coords."""
+        new_contours = []
+        for poly in self.contours:
+            kept = [
+                (x, y) for (x, y) in poly
+                if not (x_min <= x <= x_max and y_min <= y <= y_max)
+            ]
+            if len(kept) >= 3:
+                new_contours.append(kept)
+        self.contours = new_contours
+        self.render()
+
+    def on_right_down(self, e):
+        """Start single-click or box selection."""
+        ix, iy = self.screen_to_image(e.x, e.y)
+        self.box_selecting = True
+        self.box_start_img = (ix, iy)
+        self.box_current_img = (ix, iy)
+        self.box_start_screen = (e.x, e.y)
+
+    def on_right_drag(self, e):
+        """Update box selection while dragging."""
+        if not self.box_selecting:
+            return
+        ix, iy = self.screen_to_image(e.x, e.y)
+        self.box_current_img = (ix, iy)
+        self.render()  # will draw the green rectangle
+
+    def on_right_up(self, e):
+        """End click/drag: either delete single vertex or box-delete."""
+        if not self.box_selecting:
+            return
+
+        dx = e.x - self.box_start_screen[0]
+        dy = e.y - self.box_start_screen[1]
+        move_dist_sq = dx * dx + dy * dy
+
+        start_img = self.box_start_img
+        end_img = self.box_current_img
+
+        # reset selection state BEFORE deleting so rectangle disappears
+        self.box_selecting = False
+        self.box_start_img = None
+        self.box_current_img = None
+        self.box_start_screen = None
+
+        # tiny movement => treat as simple right-click delete
+        click_thresh_sq = 5 * 5  # 5 px radius
+        if move_dist_sq <= click_thresh_sq:
+            if start_img is not None:
+                self.delete_single_vertex_at(*start_img)
+            return
+
+        # otherwise, do a box delete
+        if start_img is not None and end_img is not None:
+            x1, y1 = start_img
+            x2, y2 = end_img
+            x_min, x_max = sorted((x1, x2))
+            y_min, y_max = sorted((y1, y2))
+            self.delete_points_in_box(x_min, y_min, x_max, y_max)
+
+    # ---------- mouse move ----------
     def on_motion(self, e):
         ix, iy = self.screen_to_image(e.x, e.y)
         self.hover = self.find_nearest_vertex((ix, iy), thresh=8)
-        # could show hover highlight later
-        # self.render()
+        # could use this to highlight hover vertex later
 
     def finish_current_poly(self):
         if len(self.current_poly) >= 3:
@@ -365,6 +437,20 @@ class ContourEditorGUI:
         # helpful status bar text
         mode_text = f"Mode: {self.mode.upper()}  |  Zoom: {self.scale:.2f}x  |  Contours: {len(self.contours)}"
         self.canvas.create_text(10, 10, anchor="nw", text=mode_text, fill="white", font=("Segoe UI", 10, "bold"))
+
+        # draw box-selection rectangle if active
+        if self.box_selecting and self.box_start_img and self.box_current_img:
+            x1, y1 = self.box_start_img
+            x2, y2 = self.box_current_img
+
+            # convert image coords -> screen/canvas coords
+            sx1 = x1 * self.scale + self.offset[0]
+            sy1 = y1 * self.scale + self.offset[1]
+            sx2 = x2 * self.scale + self.offset[0]
+            sy2 = y2 * self.scale + self.offset[1]
+
+            self.canvas.create_rectangle(sx1, sy1, sx2, sy2,
+                                         outline="lime", width=1)
 
     # ---------- public API ----------
     def start(self):
